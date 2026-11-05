@@ -3,29 +3,34 @@
   "version": "1.0.0",
   "private": true,
   "description": "Express 5 + TypeScript + Prisma 7 + Neon boilerplate for the MLBB hero/skin/player store",
-  "main": "dist/main.js",
+  "main": "dist/src/main.js",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "prisma generate && tsc -p tsconfig.json",
-    "start": "node dist/main.js",
+    "start": "node dist/src/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "db:seed": "prisma db seed",
-    "seed": "tsx prisma/seed.ts"
+    "seed": "tsx prisma/seed.ts",
+    "test:api": "node scripts/run-tests.mjs --seed --start",
+    "test:api:live": "node scripts/run-tests.mjs"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.2.0",
     "@prisma/adapter-neon": "7.10.1",
     "@prisma/client": "7.10.1",
     "csv-parse": "^5.6.0",
     "dotenv": "^16.4.7",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "ws": "^8.22.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.0",
+    "@types/ws": "^8.18.2",
     "prisma": "7.10.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"

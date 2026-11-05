@@ -1,11 +1,12 @@
 import app from './app';
-import { prisma } from './lib/prisma';
+import { connectWithRetry } from './lib/prisma';
 
 const PORT = Number(process.env.PORT ?? 3002);
 
 async function main() {
     // Prove the Neon connection works before accepting traffic.
-    await prisma.$queryRaw`SELECT 1`;
+    // Retries cover Neon cold starts after an idle suspend.
+    await connectWithRetry();
 
     app.listen(PORT, () => {
         console.log(`Server running on http://localhost:${PORT}`);

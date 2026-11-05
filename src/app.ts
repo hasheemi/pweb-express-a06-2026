@@ -1,10 +1,14 @@
 import express from 'express';
 import { prisma } from './lib/prisma';
-import { Role, Lane } from './generated/prisma/enums';
+import { Role, Lane, Currency } from './generated/prisma/enums';
+import { logger } from './middleware/logger';
+import { errorHandler, notFound } from './middleware/error';
+
 // import { Prisma } from "../src/generated/prisma/client";
 
 const app = express();
 app.use(express.json());
+app.use(logger);
 
 // --- Health ---
 app.get('/health', (req, res) => {
@@ -205,43 +209,618 @@ app.post('/api/heroes', async (req, res) => {
 });
 
 // --- 3. Skin ---
-app.get('/api/skins', (req, res) => {
-    res.json('hello');
+
+app.get('/api/skins', async (req, res) => {
+    try {
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string) || 10;
+        const heroId = (req.query.heroId as string) || '';
+        const rarity = (req.query.rarity as string) || '';
+
+        const skip = (page - 1) * limit;
+        const whereCondition: any = {};
+
+        if (heroId) {
+            whereCondition.heroId = parseInt(heroId);
+        }
+        if (rarity) {
+            whereCondition.rarity = rarity.toUpperCase();
+        }
+
+        const [skins, totalItems] = await Promise.all([
+            prisma.skin.findMany({
+                where: whereCondition,
+                skip: skip,
+                take: limit,
+                include: {
+                    hero: true,
+                },
+            }),
+            prisma.skin.count({
+                where: whereCondition,
+            }),
+        ]);
+
+        if (skins.length === 0) {
+            return res.status(404).json({
+                status: false,
+                message: 'Skin tidak ditemukan',
+            });
+        }
+
+        const totalPages = Math.ceil(totalItems / limit);
+        return res.status(200).json({
+            status: true,
+            message: 'Berhasil mengambil data skin',
+            data: skins,
+            metadata: {
+                currentPage: page,
+                limit: limit,
+                totalItems: totalItems,
+                totalPages: totalPages,
+            },
+        });
+    } catch (e) {
+        return res.status(500).json({
+            status: false,
+            message:
+                e instanceof Error
+                    ? `Terjadi kesalahan: ${e.message}`
+                    : 'Terjadi kesalahan pada server',
+        });
+    }
 });
-app.get('/api/skins/:skin_id', (req, res) => {
-    res.json('hello');
+// --- 3b. Skin Detail ---
+app.get('/api/skins/:skin_id', async (req, res) => {
+    try {
+        const id = parseInt(req.params.skin_id as string);
+
+        if (isNaN(id)) {
+            return res.status(400).json({
+                status: false,
+                message: 'ID skin tidak valid',
+            });
+        }
+
+        const skin = await prisma.skin.findUnique({
+            where: { id: id },
+            include: {
+                hero: true,
+            },
+        });
+
+        if (!skin) {
+            return res.status(404).json({
+                status: false,
+                message: 'Skin tidak ditemukan',
+            });
+        }
+
+        return res.status(200).json({
+            status: true,
+            message: 'Berhasil mengambil detail skin',
+            data: skin,
+        });
+    } catch (e) {
+        return res.status(500).json({
+            status: false,
+            message:
+                e instanceof Error
+                    ? `Terjadi kesalahan: ${e.message}`
+                    : 'Terjadi kesalahan pada server',
+        });
+    }
 });
 
 // --- 4. Player ---
-app.post('/api/players', (req, res) => {
-    res.json('hello');
+app.post('/api/players', async (req, res) => {
+    try {
+        const { nickname } = req.body;
+
+        if (!nickname || String(nickname).trim() === '') {
+            return res.status(400).json({
+                status: false,
+                message: 'Field nickname wajib diisi',
+            });
+        }
+
+        const existingPlayer = await prisma.player.findUnique({
+            where: { nickname: nickname },
+        });
+
+        if (existingPlayer) {
+            return res.status(409).json({
+                status: false,
+                message: 'Nickname sudah dipakai',
+            });
+        }
+
+        const newPlayer = await prisma.player.create({
+            data: {
+                nickname: nickname,
+            },
+        });
+
+        return res.status(201).json({
+            status: true,
+            message: 'Berhasil membuat player baru',
+            data: newPlayer,
+        });
+    } catch (e) {
+        return res.status(500).json({
+            status: false,
+            message:
+                e instanceof Error
+                    ? `Terjadi kesalahan: ${e.message}`
+                    : 'Terjadi kesalahan pada server',
+        });
+    }
 });
-app.get('/api/players/:player_id', (req, res) => {
-    res.json('hello');
+// --- 4b. Player Detail ---
+app.get('/api/players/:player_id', async (req, res) => {
+    try {
+        const id = parseInt(req.params.player_id as string);
+
+        if (isNaN(id)) {
+            return res.status(400).json({
+                status: false,
+                message: 'ID player tidak valid',
+            });
+        }
+
+        const player = await prisma.player.findUnique({
+            where: { id: id },
+            include: {
+                playerHeros: {
+                    include: {
+                        hero: true,
+                    },
+                },
+            },
+        });
+
+        if (!player) {
+            return res.status(404).json({
+                status: false,
+                message: 'Player tidak ditemukan',
+            });
+        }
+
+        return res.status(200).json({
+            status: true,
+            message: 'Berhasil mengambil detail player',
+            data: player,
+        });
+    } catch (e) {
+        return res.status(500).json({
+            status: false,
+            message:
+                e instanceof Error
+                    ? `Terjadi kesalahan: ${e.message}`
+                    : 'Terjadi kesalahan pada server',
+        });
+    }
 });
-app.patch('/api/players/:player_id', (req, res) => {
-    res.json('hello');
+// --- 4c. Update Player (ganti nickname) ---
+app.patch('/api/players/:player_id', async (req, res) => {
+    try {
+        const id = parseInt(req.params.player_id as string);
+        const { nickname } = req.body;
+
+        if (isNaN(id)) {
+            return res.status(400).json({
+                status: false,
+                message: 'ID player tidak valid',
+            });
+        }
+
+        const player = await prisma.player.findUnique({
+            where: { id: id },
+        });
+
+        if (!player) {
+            return res.status(404).json({
+                status: false,
+                message: 'Player tidak ditemukan',
+            });
+        }
+
+        if (!nickname || String(nickname).trim() === '') {
+            return res.status(400).json({
+                status: false,
+                message: 'Field nickname wajib diisi',
+            });
+        }
+
+        const existingPlayer = await prisma.player.findUnique({
+            where: { nickname: nickname },
+        });
+
+        if (existingPlayer && existingPlayer.id !== id) {
+            return res.status(409).json({
+                status: false,
+                message: 'Nickname sudah dipakai player lain',
+            });
+        }
+
+        const updatedPlayer = await prisma.player.update({
+            where: { id: id },
+            data: { nickname: nickname },
+        });
+
+        return res.status(200).json({
+            status: true,
+            message: 'Berhasil memperbarui player',
+            data: updatedPlayer,
+        });
+    } catch (e) {
+        return res.status(500).json({
+            status: false,
+            message:
+                e instanceof Error
+                    ? `Terjadi kesalahan: ${e.message}`
+                    : 'Terjadi kesalahan pada server',
+        });
+    }
 });
-app.delete('/api/players/:player_id', (req, res) => {
-    res.json('hello');
+// --- 4d. Delete Player ---
+app.delete('/api/players/:player_id', async (req, res) => {
+    try {
+        const id = parseInt(req.params.player_id as string);
+
+        if (isNaN(id)) {
+            return res.status(400).json({
+                status: false,
+                message: 'ID player tidak valid',
+            });
+        }
+
+        const player = await prisma.player.findUnique({
+            where: { id: id },
+        });
+
+        if (!player) {
+            return res.status(404).json({
+                status: false,
+                message: 'Player tidak ditemukan',
+            });
+        }
+
+        await prisma.player.delete({
+            where: { id: id },
+        });
+
+        return res.status(200).json({
+            status: true,
+            message: 'Berhasil menghapus player',
+        });
+    } catch (e) {
+        return res.status(500).json({
+            status: false,
+            message:
+                e instanceof Error
+                    ? `Terjadi kesalahan: ${e.message}`
+                    : 'Terjadi kesalahan pada server',
+        });
+    }
 });
 
 // --- 5. Top Up & Match ---
-app.post('/api/players/:player_id/topup', (req, res) => {
-    res.json('hello');
+app.post('/api/players/:player_id/topup', async (req, res) => {
+    try {
+        const id = parseInt(req.params.player_id as string);
+        const { amount } = req.body;
+
+        if (isNaN(id)) {
+            return res.status(400).json({
+                status: false,
+                message: 'ID player tidak valid',
+            });
+        }
+
+        if (!Number.isInteger(amount) || amount <= 0) {
+            return res.status(400).json({
+                status: false,
+                message: 'amount harus bilangan bulat lebih dari 0',
+            });
+        }
+
+        const player = await prisma.player.findUnique({
+            where: { id: id },
+        });
+
+        if (!player) {
+            return res.status(404).json({
+                status: false,
+                message: 'Player tidak ditemukan',
+            });
+        }
+
+        const updatedPlayer = await prisma.player.update({
+            where: { id: id },
+            data: {
+                diamond: { increment: amount },
+            },
+        });
+
+        return res.status(200).json({
+            status: true,
+            message: 'Berhasil top up diamond',
+            data: {
+                id: updatedPlayer.id,
+                nickname: updatedPlayer.nickname,
+                diamond: updatedPlayer.diamond,
+            },
+        });
+    } catch (e) {
+        return res.status(500).json({
+            status: false,
+            message:
+                e instanceof Error
+                    ? `Terjadi kesalahan: ${e.message}`
+                    : 'Terjadi kesalahan pada server',
+        });
+    }
 });
-app.post('/api/players/:player_id/matches', (req, res) => {
-    res.json('hello');
+app.post('/api/players/:player_id/matches', async (req, res) => {
+    try {
+        const id = parseInt(req.params.player_id as string);
+        const { result } = req.body;
+
+        if (isNaN(id)) {
+            return res.status(400).json({
+                status: false,
+                message: 'ID player tidak valid',
+            });
+        }
+
+        const resultUpper = String(result || '').toUpperCase();
+
+        if (resultUpper !== 'WIN' && resultUpper !== 'LOSE') {
+            return res.status(400).json({
+                status: false,
+                message: 'result harus WIN atau LOSE',
+            });
+        }
+
+        const player = await prisma.player.findUnique({
+            where: { id: id },
+        });
+
+        if (!player) {
+            return res.status(404).json({
+                status: false,
+                message: 'Player tidak ditemukan',
+            });
+        }
+
+        const bpEarned = resultUpper === 'WIN' ? 300 : 100;
+
+        const updatedPlayer = await prisma.player.update({
+            where: { id: id },
+            data: {
+                bp: { increment: bpEarned },
+            },
+        });
+
+        return res.status(200).json({
+            status: true,
+            message: 'Berhasil menyelesaikan match',
+            data: {
+                id: updatedPlayer.id,
+                nickname: updatedPlayer.nickname,
+                result: resultUpper,
+                bpEarned: bpEarned,
+                bp: updatedPlayer.bp,
+            },
+        });
+    } catch (e) {
+        return res.status(500).json({
+            status: false,
+            message:
+                e instanceof Error
+                    ? `Terjadi kesalahan: ${e.message}`
+                    : 'Terjadi kesalahan pada server',
+        });
+    }
 });
 
 // --- 6. Beli Hero ---
-app.post('/api/players/:player_id/heroes', (req, res) => {
-    res.json('hello');
+app.post('/api/players/:player_id/heroes', async (req, res) => {
+    try {
+        const id = parseInt(req.params.player_id as string);
+        const { heroId, currency } = req.body;
+
+        if (isNaN(id)) {
+            return res.status(400).json({
+                status: false,
+                message: 'ID player tidak valid',
+            });
+        }
+
+        const currencyUpper = String(currency || '').toUpperCase();
+
+        if (
+            heroId === undefined ||
+            heroId === null ||
+            heroId === '' ||
+            (currencyUpper !== 'BP' && currencyUpper !== 'DIAMOND')
+        ) {
+            return res.status(400).json({
+                status: false,
+                message: 'heroId wajib diisi dan currency harus BP atau DIAMOND',
+            });
+        }
+
+        const heroIdInt = parseInt(heroId);
+        if (isNaN(heroIdInt)) {
+            return res.status(400).json({
+                status: false,
+                message: 'heroId tidak valid',
+            });
+        }
+
+        const player = await prisma.player.findUnique({
+            where: { id: id },
+        });
+        if (!player) {
+            return res.status(404).json({
+                status: false,
+                message: 'Player tidak ditemukan',
+            });
+        }
+
+        const hero = await prisma.hero.findUnique({
+            where: { id: heroIdInt },
+        });
+        if (!hero) {
+            return res.status(404).json({
+                status: false,
+                message: 'Hero tidak ditemukan',
+            });
+        }
+
+        const price = currencyUpper === 'BP' ? hero.priceBP : hero.priceDiamond;
+        // price 0 berarti hero tidak dijual dengan currency tersebut
+        // (contoh: Freya hanya punya harga Diamond di data/heroes.csv).
+        if (price === null || price === undefined || price <= 0) {
+            return res.status(400).json({
+                status: false,
+                message: `Hero ini tidak bisa dibeli dengan ${currencyUpper}`,
+            });
+        }
+
+        const owned = await prisma.playerHero.findUnique({
+            where: {
+                playerId_heroId: {
+                    playerId: id,
+                    heroId: heroIdInt,
+                },
+            },
+        });
+        if (owned) {
+            return res.status(409).json({
+                status: false,
+                message: 'Player sudah memiliki hero ini',
+            });
+        }
+
+        const balance = currencyUpper === 'BP' ? player.bp : player.diamond;
+        if (balance < price) {
+            return res.status(400).json({
+                status: false,
+                message: `Saldo ${currencyUpper} tidak cukup`,
+            });
+        }
+
+        const [updatedPlayer, newPlayerHero] = await prisma.$transaction([
+            prisma.player.update({
+                where: { id: id },
+                data:
+                    currencyUpper === 'BP'
+                        ? { bp: { decrement: price } }
+                        : { diamond: { decrement: price } },
+            }),
+            prisma.playerHero.create({
+                data: {
+                    playerId: id,
+                    heroId: heroIdInt,
+                    currency: currencyUpper as Currency,
+                    pricePaid: price,
+                },
+                include: {
+                    hero: true,
+                },
+            }),
+        ]);
+
+        return res.status(201).json({
+            status: true,
+            message: 'Berhasil membeli hero',
+            data: {
+                hero: newPlayerHero.hero,
+                currency: currencyUpper,
+                pricePaid: price,
+                bp: updatedPlayer.bp,
+                diamond: updatedPlayer.diamond,
+            },
+        });
+    } catch (e) {
+        return res.status(500).json({
+            status: false,
+            message:
+                e instanceof Error
+                    ? `Terjadi kesalahan: ${e.message}`
+                    : 'Terjadi kesalahan pada server',
+        });
+    }
 });
 
 // --- 7. Statistik ---
-app.get('/api/statistics', (req, res) => {
-    res.json('hello');
+app.get('/api/statistics', async (req, res) => {
+    try {
+        const [totalPlayers, totalHeroesOwned, diamondAgg, mostOwnedGroup, heroesPerRoleGroup] =
+            await Promise.all([
+                prisma.player.count(),
+                prisma.playerHero.count(),
+                prisma.player.aggregate({
+                    _sum: { diamond: true },
+                }),
+                prisma.playerHero.groupBy({
+                    by: ['heroId'],
+                    _count: { heroId: true },
+                    orderBy: {
+                        _count: { heroId: 'desc' },
+                    },
+                    take: 1,
+                }),
+                prisma.hero.groupBy({
+                    by: ['role'],
+                    _count: { role: true },
+                }),
+            ]);
+
+        let mostOwnedHero: any = null;
+        if (mostOwnedGroup.length > 0) {
+            const top = mostOwnedGroup[0];
+            const hero = await prisma.hero.findUnique({
+                where: { id: top.heroId },
+            });
+            mostOwnedHero = {
+                heroId: top.heroId,
+                name: hero ? hero.name : null,
+                ownedBy: top._count.heroId,
+            };
+        }
+
+        const heroesPerRole: Record<string, number> = {};
+        for (const row of heroesPerRoleGroup) {
+            heroesPerRole[row.role] = row._count.role;
+        }
+
+        return res.status(200).json({
+            status: true,
+            message: 'Berhasil mengambil statistik',
+            data: {
+                totalPlayers: totalPlayers,
+                totalHeroesOwned: totalHeroesOwned,
+                totalDiamond: diamondAgg._sum.diamond ?? 0,
+                mostOwnedHero: mostOwnedHero,
+                heroesPerRole: heroesPerRole,
+            },
+        });
+    } catch (e) {
+        return res.status(500).json({
+            status: false,
+            message:
+                e instanceof Error
+                    ? `Terjadi kesalahan: ${e.message}`
+                    : 'Terjadi kesalahan pada server',
+        });
+    }
 });
+
+app.use(notFound);
+app.use(errorHandler);
 
 export default app;

@@ -2,7 +2,7 @@ import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import { parse } from "csv-parse/sync";
-import { prisma } from "../src/lib/prisma";
+import { prisma, connectWithRetry } from "../src/lib/prisma";
 import { Currency, Rarity, Role, Lane } from "../src/generated/prisma/enums";
 
 // ---------------------------------------------------------------- helpers
@@ -33,6 +33,9 @@ function readCsv<T>(file: string): T[] {
 // ---------------------------------------------------------------- seed
 
 async function main() {
+  // Neon bisa cold-start setelah idle; retry sebelum truncate.
+  await connectWithRetry();
+
   // 1. Kosongkan semua tabel — id kembali ke 1
   await prisma.$executeRawUnsafe(
     `TRUNCATE "PlayerHero", "Player", "Skin", "Hero" RESTART IDENTITY CASCADE;`
@@ -74,6 +77,13 @@ async function main() {
     ],
   });
   console.log("✓ 3 players inserted");
+
+  // Player di-insert dengan id eksplisit, sehingga sequence tidak ikut maju.
+  // Tanpa setval, POST /api/players berikutnya akan bentrok di id = 1.
+  await prisma.$executeRawUnsafe(
+    `SELECT setval(pg_get_serial_sequence('"Player"', 'id'), (SELECT MAX(id) FROM "Player"));`
+  );
+  console.log("✓ Player id sequence synced");
 
   // 5. PlayerHero
   await prisma.playerHero.createMany({
